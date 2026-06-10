@@ -129,9 +129,14 @@ class ImageAnalyzerCog(commands.Cog):
                 img_score += 8
                 flags.append(f)
 
-        # BÚSQUEDA INVERSA — links para verificar
+        # BÚSQUEDA INVERSA
         rev = r["reverse"]
-        self._reverse_links = rev.get("links", {})
+        if rev["found"] and rev["sources"]:
+            img_score += 35
+            flags.append(f"🔴 ENCONTRADA EN INTERNET ({rev['engine']}: {len(rev['sources'])} fuentes)")
+            for s in rev["sources"][:5]:
+                flags.append(f"   🔗 [{s['title']}]({s['url']})" if s["url"] else f"   📌 {s['title']}")
+        self._reverse_data = rev
 
         # HASH DUPLICADO
         duplicate = None
@@ -202,11 +207,19 @@ class ImageAnalyzerCog(commands.Cog):
             f"**Score: {img_score}**"
         ), inline=True)
 
-        # Links de búsqueda inversa
-        rev_links = getattr(self, "_reverse_links", {})
-        if rev_links:
-            links_text = "\n".join(f"[{name}]({url})" for name, url in rev_links.items())
-            embed.add_field(name="🌐 Verificar en internet", value=links_text, inline=False)
+        # Fuentes encontradas (más de 5 van acá)
+        rev_data = getattr(self, "_reverse_data", {})
+        extra_sources = rev_data.get("sources", [])[5:10]
+        if extra_sources:
+            extra_text = "\n".join(f"🔗 [{s['title']}]({s['url']})" for s in extra_sources if s["url"])
+            if extra_text:
+                embed.add_field(name="🌐 Más fuentes", value=extra_text[:1024], inline=False)
+
+        # Links manuales de respaldo
+        manual = rev_data.get("manual_links", {})
+        if manual:
+            manual_text = " • ".join(f"[{n}]({u})" for n, u in manual.items())
+            embed.add_field(name="🔎 Buscar manual", value=manual_text, inline=False)
 
         if attachment:
             embed.set_thumbnail(url=attachment.url)
