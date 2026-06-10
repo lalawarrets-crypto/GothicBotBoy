@@ -1,5 +1,5 @@
 """
-Listener automático de imágenes — analiza cada imagen subida al servidor.
+Listener automático de imágenes — solo en canales configurados.
 """
 import io
 import asyncio
@@ -12,8 +12,8 @@ from database.db import upsert_user, add_image, find_duplicate_hash, update_scor
 from services.exif_service import extract_exif
 from services.hash_service import compute_phash
 from services.ai_detection import check_ai_image
+from cogs.catfish_config import is_monitored, get_log_channel_id
 
-# Scoring
 SCORE_NO_EXIF = 10
 SCORE_AI_HIGH = 35
 SCORE_DUPLICATE = 50
@@ -22,7 +22,6 @@ SCORE_ACCOUNT_MEDIUM = 15
 
 
 def _account_age_days(user):
-    """Días desde la creación de la cuenta."""
     from datetime import datetime, timezone
     return (datetime.now(timezone.utc) - user.created_at).days
 
@@ -30,7 +29,7 @@ def _account_age_days(user):
 class ImageAnalyzerCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self._analyzing = set()  # evitar duplicados simultáneos
+        self._analyzing = set()
 
     @commands.Cog.listener()
     async def on_message(self, message):
@@ -38,11 +37,18 @@ class ImageAnalyzerCog(commands.Cog):
             return
         if not message.attachments:
             return
+        # Solo canales configurados
+        if not is_monitored(message.channel.id):
+            return
+        # Whitelist: score negativo
+        db_user = get_user(message.author.id)
+        if db_user and db_user.get("score", 0) < 0:
+            return
 
         for att in message.attachments:
             if not att.content_type or not att.content_type.startswith("image/"):
                 continue
-            if att.size > 10 * 1024 * 1024:  # >10MB skip
+            if att.size > 10 * 1024 * 1024:
                 continue
             if att.id in self._analyzing:
                 continue
@@ -61,23 +67,19 @@ class ImageAnalyzerCog(commands.Cog):
         if not guild:
             return
 
-        # Registrar usuario
         upsert_user(
             user.id, str(user),
             join_date=user.joined_at.isoformat() if user.joined_at else None,
             account_created=user.created_at.isoformat(),
         )
 
-        # Descargar imagen en thread
         try:
             image_bytes = await attachment.read()
         except:
             return
 
-        # Análisis en thread para no bloquear
         results = await asyncio.to_thread(self._run_analysis, image_bytes, attachment.url)
 
-        # Calcular score
         score_add = 0
         flags = []
 
@@ -89,7 +91,7 @@ class ImageAnalyzerCog(commands.Cog):
             cam = results["exif"].get("camera", "")
             flags.append(f"✅ EXIF: {cam}" if cam else "✅ EXIF presente")
 
-        # AI Detection
+        # AI
         ai_score = results["ai"]["ai_score"]
         if ai_score > 0.5:
             score_add += SCORE_AI_HIGH
@@ -122,16 +124,12 @@ class ImageAnalyzerCog(commands.Cog):
 
         # Guardar en DB
         add_image(
-            user_id=user.id,
-            message_id=message.id,
-            channel_id=message.channel.id,
-            url=attachment.url,
-            phash=results["phash"],
-            has_exif=results["exif"]["has_exif"],
+            user_id=user.id, message_id=message.id,
+            channel_id=message.channel.id, url=attachment.url,
+            phash=results["phash"], has_exif=results["exif"]["has_exif"],
             exif_camera=results["exif"].get("camera"),
             exif_software=results["exif"].get("software"),
-            ai_score=ai_score,
-            ai_type=results["ai"]["ai_type"],
+            ai_score=ai_score, ai_type=results["ai"]["ai_type"],
             duplicate_of=duplicate["user_id"] if duplicate else None,
         )
 
@@ -141,15 +139,12 @@ class ImageAnalyzerCog(commands.Cog):
         new_score = old_score + score_add
         update_score(user.id, new_score)
 
-        # Determinar nivel de alerta
         if new_score < 26:
-            return  # Normal, no alertar
+            return
 
-        # Enviar alerta a mods
         await self._send_alert(message, user, new_score, flags, results, attachment)
 
     def _run_analysis(self, image_bytes, image_url):
-        """Ejecuta análisis sync en thread."""
         return {
             "exif": extract_exif(image_bytes),
             "phash": compute_phash(image_bytes),
@@ -157,8 +152,6 @@ class ImageAnalyzerCog(commands.Cog):
         }
 
     async def _send_alert(self, message, user, score, flags, results, attachment):
-        """Envía alerta al canal de logs de moderación."""
-        # Determinar color y nivel
         if score >= 76:
             color = 0xFF0000
             level = "🔴 CATFISH PROBABLE"
@@ -171,57 +164,41 @@ class ImageAnalyzerCog(commands.Cog):
         else:
             return
 
-        embed = discord.Embed(
-            title=f"{level} — Score: {score}",
-            color=color,
-        )
+        embed = discord.Embed(title=f"{level} — Score: {score}", color=color)
         embed.set_author(name=f"{user} ({user.id})", icon_url=user.display_avatar.url)
 
-        # Info del análisis
         analysis_text = "\n".join(flags)
         embed.add_field(name="📸 Análisis", value=analysis_text, inline=False)
 
-        # Info del usuario
         age = _account_age_days(user)
-        user_info = (
+        embed.add_field(name="👤 Usuario", value=(
             f"**Cuenta:** {age} días\n"
             f"**En servidor:** {user.joined_at.strftime('%Y-%m-%d') if user.joined_at else '?'}\n"
             f"**Canal:** {message.channel.mention}"
-        )
-        embed.add_field(name="👤 Usuario", value=user_info, inline=True)
+        ), inline=True)
 
-        # EXIF
         exif = results["exif"]
         exif_text = "Sin metadatos"
         if exif["has_exif"]:
             parts = []
-            if exif["camera"]:
-                parts.append(f"📷 {exif['camera']}")
-            if exif["software"]:
-                parts.append(f"💻 {exif['software']}")
-            if exif["date"]:
-                parts.append(f"📅 {exif['date']}")
-            if exif["gps"]:
-                parts.append("📍 GPS presente")
-            exif_text = "\n".join(parts) if parts else "Presente pero vacío"
+            if exif["camera"]: parts.append(f"📷 {exif['camera']}")
+            if exif["software"]: parts.append(f"💻 {exif['software']}")
+            if exif["date"]: parts.append(f"📅 {exif['date']}")
+            if exif["gps"]: parts.append("📍 GPS presente")
+            exif_text = "\n".join(parts) if parts else "Presente"
         embed.add_field(name="📋 EXIF", value=exif_text, inline=True)
 
         if attachment:
             embed.set_thumbnail(url=attachment.url)
-
         embed.set_footer(text="Anti-Catfish | Zona Gothic")
 
-        # Buscar canal de logs (configurable o por nombre)
-        import os
-        log_ch_id = os.getenv("CATFISH_LOG_CHANNEL", "")
+        # Canal de logs desde config
+        log_ch_id = get_log_channel_id()
         log_channel = None
         if log_ch_id:
             log_channel = message.guild.get_channel(int(log_ch_id))
-        if not log_channel:
-            log_channel = discord.utils.get(message.guild.text_channels, name="catfish-logs")
 
         if log_channel:
-            # Botones de acción
             view = ModActionView(user.id)
             await log_channel.send(embed=embed, view=view)
 
@@ -245,9 +222,10 @@ class ModActionView(discord.ui.View):
         from database.db import update_score, add_mod_action
         update_score(self.target_id, 0)
         add_mod_action(self.target_id, interaction.user.id, "approve")
-        button.disabled = True
+        for item in self.children:
+            item.disabled = True
         await interaction.response.edit_message(
-            content=f"✅ Aprobado por {interaction.user.mention} — score reseteado", view=self)
+            content=f"✅ Aprobado por {interaction.user.mention}", view=self)
 
     @discord.ui.button(label="⚠️ Advertir", style=discord.ButtonStyle.secondary, custom_id="catfish_warn")
     async def warn(self, interaction: discord.Interaction, button):
@@ -257,13 +235,11 @@ class ModActionView(discord.ui.View):
         if member:
             try:
                 await member.send(
-                    "⚠️ **Advertencia Anti-Catfish**\n"
-                    "━━━━━━━━━━━━━━\n"
-                    "Se detectó actividad sospechosa en tu cuenta.\n"
-                    "Si eres una persona real, ignora este mensaje.\n"
-                    "━━━━━━━━━━━━━━")
-            except:
-                pass
+                    "⚠️ **Advertencia Anti-Catfish**\n━━━━━━━━━━━━━━\n"
+                    "Se detectó actividad sospechosa en tu cuenta.\n━━━━━━━━━━━━━━")
+            except: pass
+        for item in self.children:
+            item.disabled = True
         await interaction.response.edit_message(
             content=f"⚠️ Advertido por {interaction.user.mention}", view=self)
 
@@ -273,14 +249,12 @@ class ModActionView(discord.ui.View):
         add_mod_action(self.target_id, interaction.user.id, "ban")
         member = interaction.guild.get_member(int(self.target_id))
         if member:
-            try:
-                await member.send("🔴 **Has sido baneado por catfish detectado.**")
-            except:
-                pass
-            try:
-                await interaction.guild.ban(member, reason="Anti-Catfish: catfish confirmado")
-            except:
-                pass
+            try: await member.send("🔴 **Has sido baneado por catfish detectado.**")
+            except: pass
+            try: await interaction.guild.ban(member, reason="Anti-Catfish: catfish confirmado")
+            except: pass
+        for item in self.children:
+            item.disabled = True
         await interaction.response.edit_message(
             content=f"🔨 Baneado por {interaction.user.mention}", view=self)
 
