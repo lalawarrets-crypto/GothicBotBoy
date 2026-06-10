@@ -8,8 +8,8 @@ import re
 
 
 def reverse_search_yandex(image_url):
-    """Busca una imagen en Yandex."""
-    result = {"found": False, "matches": 0, "source": "", "error": None}
+    """Busca una imagen en Yandex. Retorna hasta 10 fuentes."""
+    result = {"found": False, "matches": 0, "sources": [], "error": None}
 
     try:
         encoded_url = urllib.parse.quote(image_url, safe="")
@@ -27,27 +27,33 @@ def reverse_search_yandex(image_url):
         site_patterns = [
             r'"siteUrl":"(https?://[^"]+)"',
             r'"url":"(https?://[^"]+)"',
+            r'href="(https?://[^"]*(?:instagram|facebook|twitter|tiktok|pinterest|reddit|vk\.com|tumblr|flickr|deviantart|imgur)[^"]*)"',
             r'class="serp-item__link"[^>]*href="(https?://[^"]+)"',
+            r'"pageURL":"(https?://[^"]+)"',
         ]
         for pattern in site_patterns:
             matches = re.findall(pattern, html)
             for m in matches:
-                if "yandex" not in m.lower() and "google" not in m.lower():
+                m_lower = m.lower()
+                if "yandex" not in m_lower and "google" not in m_lower and len(m) > 10:
                     sites_found.append(m)
 
-        has_results = any(x in html.lower() for x in [
-            "similar images", "sites containing",
-            "other sizes", "results found",
-            "serp-item", "thumb-image",
-        ])
+        # Deduplicar por dominio
+        seen_domains = set()
+        unique = []
+        for url in sites_found:
+            try:
+                domain = url.split("//")[1].split("/")[0].replace("www.", "")
+            except:
+                domain = url
+            if domain not in seen_domains:
+                seen_domains.add(domain)
+                unique.append(url)
 
-        unique_sites = list(set(sites_found))[:10]
-
-        if unique_sites or has_results:
+        if unique:
             result["found"] = True
-            result["matches"] = max(len(unique_sites), 1)
-            if unique_sites:
-                result["source"] = unique_sites[0][:100]
+            result["matches"] = len(unique)
+            result["sources"] = unique[:10]
 
     except Exception as e:
         result["error"] = str(e)[:80]
@@ -58,7 +64,7 @@ def reverse_search_yandex(image_url):
 
 def reverse_search_google_lens(image_url):
     """Busqueda en Google Lens como respaldo."""
-    result = {"found": False, "matches": 0, "source": "", "error": None}
+    result = {"found": False, "matches": 0, "sources": [], "error": None}
 
     try:
         encoded_url = urllib.parse.quote(image_url, safe="")
@@ -71,17 +77,25 @@ def reverse_search_google_lens(image_url):
         resp = urllib.request.urlopen(req, timeout=15)
         html = resp.read().decode("utf-8", errors="ignore")
 
-        social_matches = re.findall(
-            r'"(https?://(?:www\.)?(?:instagram|facebook|twitter|tiktok|pinterest|reddit|vk\.com)[^"]+)"',
-            html)
+        all_urls = re.findall(r'"(https?://[^"]{15,200})"', html)
+        filtered = []
+        seen = set()
+        for url in all_urls:
+            low = url.lower()
+            if any(x in low for x in ["google", "gstatic", "googleapis", "schema.org"]):
+                continue
+            try:
+                domain = url.split("//")[1].split("/")[0].replace("www.", "")
+            except:
+                domain = url
+            if domain not in seen and len(url) > 15:
+                seen.add(domain)
+                filtered.append(url)
 
-        if social_matches:
+        if filtered:
             result["found"] = True
-            result["matches"] = len(social_matches)
-            result["source"] = social_matches[0][:100]
-        elif "visual_matches" in html or "search_results" in html:
-            result["found"] = True
-            result["matches"] = 1
+            result["matches"] = len(filtered)
+            result["sources"] = filtered[:10]
 
     except Exception as e:
         result["error"] = str(e)[:80]
@@ -90,24 +104,40 @@ def reverse_search_google_lens(image_url):
 
 
 def search_image(image_url):
-    """Ejecuta busqueda inversa con Yandex + Google Lens."""
+    """Ejecuta busqueda inversa con Yandex + Google Lens. Retorna hasta 10 fuentes."""
+    all_sources = []
+
     yandex = reverse_search_yandex(image_url)
-    if yandex["found"]:
-        return {
-            "found": True,
-            "engine": "Yandex",
-            "matches": yandex["matches"],
-            "source": yandex["source"],
-            "error": None,
-        }
+    if yandex["sources"]:
+        all_sources.extend(yandex["sources"])
 
     google = reverse_search_google_lens(image_url)
-    if google["found"]:
+    if google["sources"]:
+        all_sources.extend(google["sources"])
+
+    # Deduplicar por dominio
+    seen = set()
+    unique = []
+    for url in all_sources:
+        try:
+            domain = url.split("//")[1].split("/")[0].replace("www.", "")
+        except:
+            domain = url
+        if domain not in seen:
+            seen.add(domain)
+            unique.append(url)
+
+    if unique:
+        engine = []
+        if yandex["sources"]:
+            engine.append("Yandex")
+        if google["sources"]:
+            engine.append("Google")
         return {
             "found": True,
-            "engine": "Google Lens",
-            "matches": google["matches"],
-            "source": google["source"],
+            "engine": " + ".join(engine),
+            "matches": len(unique),
+            "sources": unique[:10],
             "error": None,
         }
 
@@ -115,6 +145,6 @@ def search_image(image_url):
         "found": False,
         "engine": "Yandex+Google",
         "matches": 0,
-        "source": "",
+        "sources": [],
         "error": yandex.get("error") or google.get("error"),
     }
