@@ -1,9 +1,13 @@
 """
-Configuración del sistema anti-catfish.
-Comandos para establecer canal de logs y canales monitoreados.
+Configuracion del sistema anti-catfish.
+Comandos para canal de logs y canales monitoreados.
+Persistencia via GitHub.
 """
 import os
 import json
+import base64
+import urllib.request as urlreq
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -27,6 +31,74 @@ def save_catfish_config(cfg):
     os.makedirs(DATA_PATH, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
+    try:
+        _backup_to_github()
+    except Exception as e:
+        print(f"[CatfishConfig] Backup error: {e}")
+
+
+def _backup_to_github():
+    gh_token = os.getenv("GITHUB_TOKEN", "")
+    gh_repo = os.getenv("GITHUB_REPO", "")
+    if not gh_token or not gh_repo:
+        return
+
+    with open(CONFIG_FILE, "r") as f:
+        content = f.read()
+
+    encoded = base64.b64encode(content.encode()).decode()
+    api_url = f"https://api.github.com/repos/{gh_repo}/contents/data/catfish_config.json"
+
+    sha = ""
+    try:
+        r = urlreq.Request(api_url, headers={
+            "Authorization": f"token {gh_token}",
+            "Accept": "application/vnd.github.v3+json",
+        })
+        resp = json.loads(urlreq.urlopen(r, timeout=10).read())
+        sha = resp.get("sha", "")
+    except:
+        pass
+
+    payload = json.dumps({
+        "message": "backup catfish_config",
+        "content": encoded,
+        "branch": "main",
+        **({"sha": sha} if sha else {}),
+    })
+
+    r = urlreq.Request(api_url, data=payload.encode(), headers={
+        "Authorization": f"token {gh_token}",
+        "Accept": "application/vnd.github.v3+json",
+        "Content-Type": "application/json",
+    }, method="PUT")
+    urlreq.urlopen(r, timeout=10)
+    print("[CatfishConfig] Backup OK")
+
+
+def restore_from_github():
+    if os.path.exists(CONFIG_FILE):
+        return
+
+    gh_token = os.getenv("GITHUB_TOKEN", "")
+    gh_repo = os.getenv("GITHUB_REPO", "")
+    if not gh_token or not gh_repo:
+        return
+
+    try:
+        api_url = f"https://api.github.com/repos/{gh_repo}/contents/data/catfish_config.json"
+        r = urlreq.Request(api_url, headers={
+            "Authorization": f"token {gh_token}",
+            "Accept": "application/vnd.github.v3+json",
+        })
+        resp = json.loads(urlreq.urlopen(r, timeout=10).read())
+        content = base64.b64decode(resp["content"]).decode()
+        os.makedirs(DATA_PATH, exist_ok=True)
+        with open(CONFIG_FILE, "w") as f:
+            f.write(content)
+        print("[CatfishConfig] Restaurado de GitHub")
+    except:
+        print("[CatfishConfig] Sin backup previo")
 
 
 def is_monitored(channel_id):
@@ -45,6 +117,7 @@ def get_log_channel_id():
 class CatfishConfigCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        restore_from_github()
 
     catfish_group = app_commands.Group(name="catfish", description="Configurar sistema anti-catfish")
 
@@ -73,7 +146,7 @@ class CatfishConfigCog(commands.Cog):
         channels.append(int(cid))
         save_catfish_config(cfg)
         await interaction.response.send_message(
-            f"✅ {canal.mention} agregado al monitoreo anti-catfish.", ephemeral=True)
+            f"✅ {canal.mention} agregado al monitoreo.", ephemeral=True)
 
     @catfish_group.command(name="quitar", description="[Owner] Quitar canal del monitoreo")
     @app_commands.describe(canal="Canal a quitar")
@@ -83,12 +156,7 @@ class CatfishConfigCog(commands.Cog):
         cfg = load_catfish_config()
         channels = cfg.get("monitored_channels", [])
         cid = int(canal.id)
-        if cid in channels:
-            channels.remove(cid)
-        elif str(cid) in [str(c) for c in channels]:
-            cfg["monitored_channels"] = [c for c in channels if str(c) != str(cid)]
-        else:
-            return await interaction.response.send_message("❌ No está en la lista.", ephemeral=True)
+        cfg["monitored_channels"] = [c for c in channels if int(c) != cid]
         save_catfish_config(cfg)
         await interaction.response.send_message(
             f"✅ {canal.mention} quitado del monitoreo.", ephemeral=True)
@@ -110,7 +178,7 @@ class CatfishConfigCog(commands.Cog):
             for cid in channels:
                 text += f"  📺 <#{cid}>\n"
         else:
-            text += "  Ninguno — el bot no analiza nada\n"
+            text += "  Ninguno\n"
         text += "\n━━━━━━━━━━━━━━━━━━━━━━━━"
         await interaction.response.send_message(text, ephemeral=True)
 
