@@ -129,17 +129,9 @@ class ImageAnalyzerCog(commands.Cog):
                 img_score += 8
                 flags.append(f)
 
-        # BÚSQUEDA INVERSA — ¿existe en internet?
+        # BÚSQUEDA INVERSA — links para verificar
         rev = r["reverse"]
-        if rev["found"]:
-            img_score += 35
-            flags.append(f"🔴 ENCONTRADA EN INTERNET ({rev['engine']}: {rev['matches']} fuentes)")
-            for i, src in enumerate(rev.get("sources", [])[:10]):
-                flags.append(f"   🔗 {src[:80]}")
-        elif rev.get("error"):
-            flags.append(f"⚙️ Búsqueda: {rev['error'][:40]}")
-        else:
-            flags.append("✅ No encontrada en internet")
+        self._reverse_links = rev.get("links", {})
 
         # HASH DUPLICADO
         duplicate = None
@@ -209,6 +201,12 @@ class ImageAnalyzerCog(commands.Cog):
             f"IA: {int(r['ai']['ai_score']*100)}%\n"
             f"**Score: {img_score}**"
         ), inline=True)
+
+        # Links de búsqueda inversa
+        rev_links = getattr(self, "_reverse_links", {})
+        if rev_links:
+            links_text = "\n".join(f"[{name}]({url})" for name, url in rev_links.items())
+            embed.add_field(name="🌐 Verificar en internet", value=links_text, inline=False)
 
         if attachment:
             embed.set_thumbnail(url=attachment.url)
