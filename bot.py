@@ -16,14 +16,11 @@ TOKEN = os.getenv("DISCORD_TOKEN", "")
 GUILD_ID = os.getenv("GUILD_ID", "")
 
 
-# === HTTP Server (mantiene vivo en hosting) ===
-
 class PingHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"Bot Boy online")
-
     def log_message(self, *args):
         pass
 
@@ -36,10 +33,8 @@ def start_ping_server():
         thread.start()
         print(f"[HTTP] Puerto {port}")
     except:
-        print("[HTTP] No se pudo iniciar (OK en DisCloud)")
+        print("[HTTP] No se pudo iniciar")
 
-
-# === Bot ===
 
 class GothicBotBoy(commands.Bot):
     def __init__(self):
@@ -57,11 +52,10 @@ class GothicBotBoy(commands.Bot):
         )
 
     async def setup_hook(self):
-        # Inicializar DB
         from database.db import init_db
         init_db()
 
-        # Cargar cogs
+        await self.load_extension("cogs.catfish_config")
         await self.load_extension("cogs.image_analyzer")
         await self.load_extension("cogs.profile_checker")
 
@@ -73,7 +67,7 @@ class GothicBotBoy(commands.Bot):
 
     async def on_ready(self):
         print("=" * 40)
-        print(f"  𝕲𝖔𝖙𝖍𝖎𝖈 𝕭𝖔𝖙 𝕭𝖔𝖞 💜")
+        print(f"  Gothic Bot Boy 💜")
         print(f"  Anti-Catfish System")
         print(f"  Bot ID: {self.user.id}")
         print(f"  Servidores: {len(self.guilds)}")
