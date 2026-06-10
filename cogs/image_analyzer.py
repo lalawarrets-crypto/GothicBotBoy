@@ -1,6 +1,6 @@
 """
-Listener automático de imágenes — análisis forense completo.
-EXIF + Hash duplicado + ELA + IA + Comportamiento.
+Listener automático — análisis forense COMPLETO de cada imagen.
+EXIF + Hash + ELA Multi-pass + IA API + Análisis Local Avanzado + Comportamiento.
 """
 import io
 import asyncio
@@ -13,21 +13,8 @@ from services.exif_service import extract_exif
 from services.hash_service import compute_phash
 from services.ai_detection import check_ai_image
 from services.ela_service import analyze_ela
-from services.behavior_tracker import analyze_behavior
+from services.local_analysis import analyze_local
 from cogs.catfish_config import is_monitored, get_log_channel_id
-
-# Scoring
-POINTS = {
-    "no_exif": 10,
-    "ai_high": 35,
-    "ai_medium": 15,
-    "duplicate": 50,
-    "account_new": 30,
-    "account_medium": 15,
-    "ela_manipulated": 20,
-    "ela_suspicious": 10,
-    "edited_software": 15,
-}
 
 
 def _account_age_days(user):
@@ -50,9 +37,9 @@ class ImageAnalyzerCog(commands.Cog):
             return
         db_user = get_user(message.author.id)
         if db_user and db_user.get("score", 0) < 0:
-            return  # Whitelist
+            return
         if db_user and db_user.get("verified"):
-            return  # Ya verificado
+            return
 
         for att in message.attachments:
             if not att.content_type or not att.content_type.startswith("image/"):
@@ -65,14 +52,13 @@ class ImageAnalyzerCog(commands.Cog):
             try:
                 await self._analyze_image(message, att)
             except Exception as e:
-                print(f"[ImageAnalyzer] Error: {e}")
+                print(f"[Analyzer] Error: {e}")
             finally:
                 self._analyzing.discard(att.id)
 
     async def _analyze_image(self, message, attachment):
         user = message.author
-        guild = message.guild
-        if not guild:
+        if not message.guild:
             return
 
         upsert_user(user.id, str(user),
@@ -84,116 +70,106 @@ class ImageAnalyzerCog(commands.Cog):
         except:
             return
 
-        results = await asyncio.to_thread(self._run_analysis, image_bytes, attachment.url)
+        r = await asyncio.to_thread(self._full_analysis, image_bytes, attachment.url)
 
         score_add = 0
         flags = []
 
         # === EXIF ===
-        exif = results["exif"]
+        exif = r["exif"]
         if not exif["has_exif"]:
-            score_add += POINTS["no_exif"]
-            flags.append("❌ Sin EXIF — probable descarga de internet")
+            score_add += 10
+            flags.append("❌ Sin EXIF — descarga de internet o screenshot")
         else:
             cam = exif.get("camera", "")
-            if cam:
-                flags.append(f"✅ Dispositivo: {cam}")
-            else:
-                flags.append("✅ EXIF presente")
+            flags.append(f"✅ EXIF: {cam}" if cam else "✅ EXIF presente")
             if exif.get("gps"):
-                flags.append("📍 GPS detectado en imagen")
-
-        # Software de edición
+                flags.append("📍 GPS en imagen")
         if exif.get("software"):
             sw = exif["software"].lower()
-            if any(x in sw for x in ["photoshop", "gimp", "lightroom", "canva", "picsart", "facetune"]):
-                score_add += POINTS["edited_software"]
-                flags.append(f"🔴 Editada con: {exif['software']}")
+            if any(x in sw for x in ["photoshop", "gimp", "lightroom", "canva", "picsart", "facetune", "meitu"]):
+                score_add += 15
+                flags.append(f"🔴 Software de edición: {exif['software']}")
 
-        # === IA Detection ===
-        ai = results["ai"]
-        ai_score = ai["ai_score"]
-        if ai_score > 0.7:
-            score_add += POINTS["ai_high"]
-            flags.append(f"🔴 IA detectada: {int(ai_score*100)}%")
-        elif ai_score > 0.5:
-            score_add += POINTS["ai_medium"]
-            flags.append(f"⚠️ Posible IA: {int(ai_score*100)}%")
+        # === IA API ===
+        ai = r["ai"]
+        if ai["ai_score"] > 0.7:
+            score_add += 35
+            flags.append(f"🔴 IA confirmada: {int(ai['ai_score']*100)}%")
+        elif ai["ai_score"] > 0.5:
+            score_add += 20
+            flags.append(f"⚠️ Posible IA: {int(ai['ai_score']*100)}%")
         elif ai.get("error"):
-            flags.append(f"⚙️ IA: {ai['error'][:50]}")
+            flags.append(f"⚙️ API: {ai['error'][:40]}")
         else:
-            flags.append(f"✅ IA: {int(ai_score*100)}%")
+            flags.append(f"✅ IA API: {int(ai['ai_score']*100)}%")
 
         # === ELA ===
-        ela = results["ela"]
-        if ela["manipulated"]:
-            if ela["score"] > 60:
-                score_add += POINTS["ela_manipulated"]
-                flags.append(f"🔴 ELA: manipulación detectada ({ela['score']}%)")
-            else:
-                score_add += POINTS["ela_suspicious"]
-                flags.append(f"🟡 ELA: posible edición ({ela['score']}%)")
+        ela = r["ela"]
+        if ela["score"] > 60:
+            score_add += 20
+            flags.append(f"🔴 ELA: {ela['details']} ({ela['score']}%)")
+        elif ela["score"] > 25:
+            score_add += 10
+            flags.append(f"🟡 ELA: {ela['details']} ({ela['score']}%)")
         else:
-            flags.append(f"✅ ELA: sin manipulación ({ela['score']}%)")
+            flags.append(f"✅ ELA: {ela['details']} ({ela['score']}%)")
 
-        # === Hash duplicado ===
+        # === LOCAL ANALYSIS ===
+        local = r["local"]
+        if local["flags"]:
+            score_add += local["score"]
+            flags.extend(local["flags"])
+
+        # === HASH DUPLICADO ===
         duplicate = None
-        phash = results["phash"]
+        phash = r["phash"]
         if phash:
             duplicate = find_duplicate_hash(phash, exclude_user=user.id)
             if duplicate:
-                score_add += POINTS["duplicate"]
-                flags.append(f"🔴 DUPLICADA — misma foto usada por <@{duplicate['user_id']}>")
+                score_add += 50
+                flags.append(f"🔴 DUPLICADA — foto de <@{duplicate['user_id']}>")
             else:
-                flags.append("✅ Imagen única")
+                flags.append("✅ No duplicada")
 
-        # === Edad de cuenta ===
+        # === CUENTA ===
         age = _account_age_days(user)
-        if age < 30:
-            score_add += POINTS["account_new"]
-            flags.append(f"🔴 Cuenta: {age} días")
+        if age < 7:
+            score_add += 40
+            flags.append(f"🔴 Cuenta MUY nueva: {age} días")
+        elif age < 30:
+            score_add += 25
+            flags.append(f"🔴 Cuenta nueva: {age} días")
         elif age < 90:
-            score_add += POINTS["account_medium"]
-            flags.append(f"🟡 Cuenta: {age} días")
-        else:
-            flags.append(f"✅ Cuenta: {age} días")
-
-        # === Comportamiento ===
-        behavior = results["behavior"]
-        if behavior["flags"]:
-            score_add += behavior["score"]
-            flags.extend(behavior["flags"])
+            score_add += 10
+            flags.append(f"🟡 Cuenta reciente: {age} días")
 
         # Guardar
-        add_image(
-            user_id=user.id, message_id=message.id,
+        add_image(user_id=user.id, message_id=message.id,
             channel_id=message.channel.id, url=attachment.url,
             phash=phash, has_exif=exif["has_exif"],
             exif_camera=exif.get("camera"), exif_software=exif.get("software"),
-            ai_score=ai_score, ai_type=ai["ai_type"],
-            duplicate_of=duplicate["user_id"] if duplicate else None,
-        )
+            ai_score=ai["ai_score"], ai_type=ai["ai_type"],
+            duplicate_of=duplicate["user_id"] if duplicate else None)
 
         existing = get_user(user.id)
         old_score = existing["score"] if existing else 0
         new_score = old_score + score_add
         update_score(user.id, new_score)
 
-        if new_score < 26:
-            return
+        if new_score >= 26:
+            await self._send_alert(message, user, new_score, score_add, flags, r, attachment)
 
-        await self._send_alert(message, user, new_score, score_add, flags, results, attachment)
-
-    def _run_analysis(self, image_bytes, image_url):
+    def _full_analysis(self, image_bytes, image_url):
         return {
             "exif": extract_exif(image_bytes),
             "phash": compute_phash(image_bytes),
             "ai": check_ai_image(image_url),
             "ela": analyze_ela(image_bytes),
-            "behavior": {"flags": [], "score": 0},  # se calcula después
+            "local": analyze_local(image_bytes),
         }
 
-    async def _send_alert(self, message, user, score, score_add, flags, results, attachment):
+    async def _send_alert(self, message, user, score, added, flags, r, attachment):
         if score >= 76:
             color, level = 0xFF0000, "🔴 CATFISH PROBABLE"
         elif score >= 51:
@@ -201,86 +177,81 @@ class ImageAnalyzerCog(commands.Cog):
         else:
             color, level = 0xFFCC00, "🟡 SOSPECHOSO"
 
-        embed = discord.Embed(title=f"{level} — Score: {score} (+{score_add})", color=color)
+        embed = discord.Embed(title=f"{level} — Score: {score} (+{added})", color=color)
         embed.set_author(name=f"{user} ({user.id})", icon_url=user.display_avatar.url)
 
-        # Dividir flags en chunks si son muchos
-        flags_text = "\n".join(flags[:15])
-        embed.add_field(name="🔍 Análisis completo", value=flags_text[:1024], inline=False)
+        # Separar flags en secciones
+        flags_text = "\n".join(flags[:20])
+        embed.add_field(name="🔍 Análisis Forense", value=flags_text[:1024], inline=False)
 
         age = _account_age_days(user)
         embed.add_field(name="👤 Info", value=(
-            f"Cuenta: {age} días\n"
-            f"Canal: {message.channel.mention}\n"
-            f"[Ver mensaje]({message.jump_url})"
+            f"Cuenta: {age}d\n{message.channel.mention}\n[Mensaje]({message.jump_url})"
         ), inline=True)
 
-        ela = results["ela"]
         embed.add_field(name="📊 Scores", value=(
-            f"ELA: {ela['score']}%\n"
-            f"IA: {int(results['ai']['ai_score']*100)}%\n"
-            f"Total: **{score}**"
+            f"ELA: {r['ela']['score']}%\n"
+            f"IA: {int(r['ai']['ai_score']*100)}%\n"
+            f"Local: +{r['local']['score']}\n"
+            f"**Total: {score}**"
         ), inline=True)
 
         if attachment:
             embed.set_thumbnail(url=attachment.url)
-        embed.set_footer(text="Anti-Catfish | Zona Gothic | Análisis Forense")
+        embed.set_footer(text="Anti-Catfish v2 | Análisis Forense Avanzado")
 
         log_ch_id = get_log_channel_id()
         if log_ch_id:
-            log_channel = message.guild.get_channel(int(log_ch_id))
-            if log_channel:
-                view = ModActionView(user.id)
-                await log_channel.send(embed=embed, view=view)
+            ch = message.guild.get_channel(int(log_ch_id))
+            if ch:
+                await ch.send(embed=embed, view=ModActionView(user.id))
 
         if score >= 76:
-            muted_role = discord.utils.get(message.guild.roles, name="Muted")
-            if muted_role:
-                try: await user.add_roles(muted_role, reason=f"Anti-Catfish: score {score}")
+            muted = discord.utils.get(message.guild.roles, name="Muted")
+            if muted:
+                try: await user.add_roles(muted, reason=f"Anti-Catfish: {score}")
                 except: pass
 
 
 class ModActionView(discord.ui.View):
-    def __init__(self, user_id):
+    def __init__(self, uid):
         super().__init__(timeout=None)
-        self.target_id = user_id
+        self.tid = uid
 
-    @discord.ui.button(label="✅ Aprobar", style=discord.ButtonStyle.success, custom_id="cf_approve")
-    async def approve(self, interaction, button):
+    @discord.ui.button(label="✅ Limpiar", style=discord.ButtonStyle.success, custom_id="cf_ok")
+    async def ok(self, i, b):
         from database.db import update_score, add_mod_action
-        update_score(self.target_id, 0)
-        add_mod_action(self.target_id, interaction.user.id, "approve")
-        for i in self.children: i.disabled = True
-        await interaction.response.edit_message(content=f"✅ Aprobado por {interaction.user.mention}", view=self)
+        update_score(self.tid, 0); add_mod_action(self.tid, i.user.id, "approve")
+        for x in self.children: x.disabled = True
+        await i.response.edit_message(content=f"✅ Limpiado por {i.user.mention}", view=self)
 
-    @discord.ui.button(label="⚠️ Advertir", style=discord.ButtonStyle.secondary, custom_id="cf_warn")
-    async def warn(self, interaction, button):
+    @discord.ui.button(label="⚠️ Advertir", style=discord.ButtonStyle.secondary, custom_id="cf_w")
+    async def w(self, i, b):
         from database.db import add_mod_action
-        add_mod_action(self.target_id, interaction.user.id, "warn")
-        m = interaction.guild.get_member(int(self.target_id))
+        add_mod_action(self.tid, i.user.id, "warn")
+        m = i.guild.get_member(int(self.tid))
         if m:
-            try: await m.send("⚠️ **Advertencia Anti-Catfish** — Actividad sospechosa detectada.")
+            try: await m.send("⚠️ **Anti-Catfish** — Actividad sospechosa detectada en tu cuenta.")
             except: pass
-        for i in self.children: i.disabled = True
-        await interaction.response.edit_message(content=f"⚠️ Advertido por {interaction.user.mention}", view=self)
+        for x in self.children: x.disabled = True
+        await i.response.edit_message(content=f"⚠️ Advertido por {i.user.mention}", view=self)
 
-    @discord.ui.button(label="🔍 Verificar", style=discord.ButtonStyle.primary, custom_id="cf_verify")
-    async def verify(self, interaction, button):
-        await interaction.response.send_message(
-            f"Usa `/verify <@{self.target_id}>` para enviar desafío de verificación.", ephemeral=True)
+    @discord.ui.button(label="🔍 Verificar", style=discord.ButtonStyle.primary, custom_id="cf_v")
+    async def v(self, i, b):
+        await i.response.send_message(f"Usa `/verify <@{self.tid}>`", ephemeral=True)
 
-    @discord.ui.button(label="🔨 Ban", style=discord.ButtonStyle.danger, custom_id="cf_ban")
-    async def ban(self, interaction, button):
+    @discord.ui.button(label="🔨 Ban", style=discord.ButtonStyle.danger, custom_id="cf_b")
+    async def ban(self, i, b):
         from database.db import add_mod_action
-        add_mod_action(self.target_id, interaction.user.id, "ban")
-        m = interaction.guild.get_member(int(self.target_id))
+        add_mod_action(self.tid, i.user.id, "ban")
+        m = i.guild.get_member(int(self.tid))
         if m:
             try: await m.send("🔴 **Baneado por catfish.**")
             except: pass
-            try: await interaction.guild.ban(m, reason="Anti-Catfish")
+            try: await i.guild.ban(m, reason="Anti-Catfish")
             except: pass
-        for i in self.children: i.disabled = True
-        await interaction.response.edit_message(content=f"🔨 Baneado por {interaction.user.mention}", view=self)
+        for x in self.children: x.disabled = True
+        await i.response.edit_message(content=f"🔨 Ban por {i.user.mention}", view=self)
 
 
 async def setup(bot):
