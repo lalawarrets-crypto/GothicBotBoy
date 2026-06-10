@@ -248,6 +248,49 @@ class ImageAnalyzerCog(commands.Cog):
                 except: pass
 
 
+class BanReasonModal(discord.ui.Modal, title="🔨 Razón del ban"):
+    reason = discord.ui.TextInput(
+        label="Motivo del ban",
+        placeholder="Ej: Catfish confirmado — fotos robadas de internet",
+        style=discord.TextStyle.short,
+        required=True,
+        max_length=200,
+    )
+
+    def __init__(self, target_id, view_ref):
+        super().__init__()
+        self.target_id = target_id
+        self.view_ref = view_ref
+
+    async def on_submit(self, interaction: discord.Interaction):
+        from database.db import add_mod_action
+        motivo = self.reason.value
+        add_mod_action(self.target_id, interaction.user.id, "ban", motivo)
+
+        member = interaction.guild.get_member(int(self.target_id))
+        if member:
+            # DM antes del ban con motivo
+            try:
+                await member.send(
+                    f"🔴 **Has sido baneado de {interaction.guild.name}**\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"📋 Motivo: **{motivo}**\n"
+                    f"━━━━━━━━━━━━━━\n"
+                    f"˚₊·͟͟͞➳❥ Anti-Catfish")
+            except:
+                pass
+            # Ejecutar ban
+            try:
+                await interaction.guild.ban(member, reason=f"Anti-Catfish: {motivo}")
+            except:
+                return await interaction.response.send_message("❌ No tengo permisos para banear.", ephemeral=True)
+
+        for item in self.view_ref.children:
+            item.disabled = True
+        await interaction.response.edit_message(
+            content=f"🔨 Baneado por {interaction.user.mention} — Razón: {motivo}", view=self.view_ref)
+
+
 class ModActionView(discord.ui.View):
     def __init__(self, uid):
         super().__init__(timeout=None)
@@ -260,33 +303,10 @@ class ModActionView(discord.ui.View):
         for x in self.children: x.disabled = True
         await i.response.edit_message(content=f"✅ OK por {i.user.mention}", view=self)
 
-    @discord.ui.button(label="⚠️ Advertir", style=discord.ButtonStyle.secondary, custom_id="cf_w")
-    async def w(self, i, b):
-        from database.db import add_mod_action
-        add_mod_action(self.tid, i.user.id, "warn")
-        m = i.guild.get_member(int(self.tid))
-        if m:
-            try: await m.send("⚠️ **Anti-Catfish** — Actividad sospechosa detectada.")
-            except: pass
-        for x in self.children: x.disabled = True
-        await i.response.edit_message(content=f"⚠️ Advertido por {i.user.mention}", view=self)
-
-    @discord.ui.button(label="🔍 Verificar", style=discord.ButtonStyle.primary, custom_id="cf_v")
-    async def v(self, i, b):
-        await i.response.send_message(f"Usa `/verify <@{self.tid}>`", ephemeral=True)
-
     @discord.ui.button(label="🔨 Ban", style=discord.ButtonStyle.danger, custom_id="cf_b")
-    async def ban(self, i, b):
-        from database.db import add_mod_action
-        add_mod_action(self.tid, i.user.id, "ban")
-        m = i.guild.get_member(int(self.tid))
-        if m:
-            try: await m.send("🔴 **Baneado por catfish.**")
-            except: pass
-            try: await i.guild.ban(m, reason="Anti-Catfish")
-            except: pass
-        for x in self.children: x.disabled = True
-        await i.response.edit_message(content=f"🔨 Ban por {i.user.mention}", view=self)
+    async def ban_btn(self, i, b):
+        modal = BanReasonModal(self.tid, self)
+        await i.response.send_modal(modal)
 
 
 async def setup(bot):
