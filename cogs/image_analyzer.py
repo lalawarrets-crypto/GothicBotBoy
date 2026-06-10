@@ -133,10 +133,9 @@ class ImageAnalyzerCog(commands.Cog):
         rev = r["reverse"]
         if rev["found"]:
             img_score += 35
-            source = rev["source"][:60] if rev["source"] else rev["engine"]
-            flags.append(f"🔴 ENCONTRADA EN INTERNET ({rev['engine']}: {rev['matches']} resultados)")
-            if rev["source"]:
-                flags.append(f"   🔗 {source}")
+            flags.append(f"🔴 ENCONTRADA EN INTERNET ({rev['engine']}: {rev['matches']} fuentes)")
+            for i, src in enumerate(rev.get("sources", [])[:10]):
+                flags.append(f"   🔗 {src[:80]}")
         elif rev.get("error"):
             flags.append(f"⚙️ Búsqueda: {rev['error'][:40]}")
         else:
