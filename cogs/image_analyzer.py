@@ -147,7 +147,7 @@ class ImageAnalyzerCog(commands.Cog):
                 img_score += 50
                 flags.append(f"🔴 DUPLICADA — foto de <@{duplicate['user_id']}>")
 
-        # CUENTA — solo penaliza si es MUY nueva
+        # CUENTA
         age = _account_age_days(user)
         if age < 7:
             img_score += 20
@@ -155,8 +155,6 @@ class ImageAnalyzerCog(commands.Cog):
         elif age < 30:
             img_score += 10
             flags.append(f"🟡 Cuenta: {age} días")
-        elif age > 365:
-            img_score -= 10  # Cuenta vieja = más confiable
 
         img_score = max(0, img_score)
 
@@ -168,9 +166,13 @@ class ImageAnalyzerCog(commands.Cog):
             ai_score=ai["ai_score"], ai_type=ai["ai_type"],
             duplicate_of=duplicate["user_id"] if duplicate else None)
 
-        # Solo alertar si ESTA imagen es sospechosa (>=30)
-        if img_score >= 30:
+        # Alertar si score >= 15 O si se encontró en internet
+        rev = r["reverse"]
+        found_online = rev.get("found", False) and len(rev.get("sources", [])) > 0
+        if img_score >= 15 or found_online:
             await self._send_alert(message, user, img_score, flags, r, attachment)
+        else:
+            print(f"[Analyzer] {user}: score={img_score} (no alerta)")
 
     def _full_analysis(self, image_bytes, image_url):
         return {
