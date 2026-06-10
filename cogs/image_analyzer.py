@@ -129,13 +129,20 @@ class ImageAnalyzerCog(commands.Cog):
                 img_score += 8
                 flags.append(f)
 
-        # BÚSQUEDA INVERSA
+        # BÚSQUEDA INVERSA (SerpAPI Google Lens)
         rev = r["reverse"]
         if rev["found"] and rev["sources"]:
             img_score += 35
-            flags.append(f"🔴 ENCONTRADA EN INTERNET ({rev['engine']}: {len(rev['sources'])} fuentes)")
+            count = len(rev["sources"])
+            flags.append(f"🔴 ENCONTRADA EN INTERNET ({count} fuentes)")
+            if rev.get("guess"):
+                flags.append(f"   📌 Google dice: **{rev['guess']}**")
             for s in rev["sources"][:5]:
-                flags.append(f"   🔗 [{s['title']}]({s['url']})" if s["url"] else f"   📌 {s['title']}")
+                flags.append(f"   🔗 [{s['title']}]({s['url']})")
+        elif rev.get("error"):
+            flags.append(f"⚙️ Búsqueda: {rev['error'][:40]}")
+        else:
+            flags.append("✅ No encontrada en internet")
         self._reverse_data = rev
 
         # HASH DUPLICADO
