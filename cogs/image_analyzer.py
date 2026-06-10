@@ -14,6 +14,7 @@ from services.hash_service import compute_phash
 from services.ai_detection import check_ai_image
 from services.ela_service import analyze_ela
 from services.local_analysis import analyze_local
+from services.reverse_search import search_image
 from cogs.catfish_config import is_monitored, get_log_channel_id
 
 
@@ -128,6 +129,19 @@ class ImageAnalyzerCog(commands.Cog):
                 img_score += 8
                 flags.append(f)
 
+        # BÚSQUEDA INVERSA — ¿existe en internet?
+        rev = r["reverse"]
+        if rev["found"]:
+            img_score += 35
+            source = rev["source"][:60] if rev["source"] else rev["engine"]
+            flags.append(f"🔴 ENCONTRADA EN INTERNET ({rev['engine']}: {rev['matches']} resultados)")
+            if rev["source"]:
+                flags.append(f"   🔗 {source}")
+        elif rev.get("error"):
+            flags.append(f"⚙️ Búsqueda: {rev['error'][:40]}")
+        else:
+            flags.append("✅ No encontrada en internet")
+
         # HASH DUPLICADO
         duplicate = None
         phash = r["phash"]
@@ -169,6 +183,7 @@ class ImageAnalyzerCog(commands.Cog):
             "ai": check_ai_image(image_url),
             "ela": analyze_ela(image_bytes),
             "local": analyze_local(image_bytes),
+            "reverse": search_image(image_url),
         }
 
     async def _send_alert(self, message, user, img_score, flags, r, attachment):
