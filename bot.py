@@ -1,6 +1,6 @@
 """
 Zona Gothic — Gothic Bot Boy 💜
-Bot anti-catfish + administración.
+Sistema Anti-Catfish Avanzado.
 """
 import os
 import threading
@@ -29,11 +29,10 @@ def start_ping_server():
     port = int(os.getenv("PORT", 8080))
     try:
         server = HTTPServer(("0.0.0.0", port), PingHandler)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
         print(f"[HTTP] Puerto {port}")
     except:
-        print("[HTTP] No se pudo iniciar")
+        print("[HTTP] Skipped")
 
 
 class GothicBotBoy(commands.Bot):
@@ -47,7 +46,7 @@ class GothicBotBoy(commands.Bot):
             intents=intents,
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="🔍 Anti-Catfish | Zona Gothic",
+                name="🔍 Anti-Catfish",
             ),
         )
 
@@ -57,7 +56,9 @@ class GothicBotBoy(commands.Bot):
 
         await self.load_extension("cogs.catfish_config")
         await self.load_extension("cogs.image_analyzer")
+        await self.load_extension("cogs.video_analyzer")
         await self.load_extension("cogs.profile_checker")
+        await self.load_extension("cogs.verification")
 
         if GUILD_ID:
             guild = discord.Object(id=int(GUILD_ID))
@@ -66,12 +67,10 @@ class GothicBotBoy(commands.Bot):
             print("[OK] Comandos sincronizados")
 
     async def on_ready(self):
-        print("=" * 40)
-        print(f"  Gothic Bot Boy 💜")
-        print(f"  Anti-Catfish System")
-        print(f"  Bot ID: {self.user.id}")
-        print(f"  Servidores: {len(self.guilds)}")
-        print("=" * 40)
+        print("=" * 45)
+        print("  𝕲𝖔𝖙𝖍𝖎𝖈 𝕭𝖔𝖙 𝕭𝖔𝖞 💜 — Anti-Catfish v2")
+        print(f"  Bot: {self.user.id} | Servers: {len(self.guilds)}")
+        print("=" * 45)
 
 
 bot = GothicBotBoy()
@@ -84,6 +83,6 @@ async def ping(interaction: discord.Interaction):
 
 
 if __name__ == "__main__":
-    print("[*] Iniciando Gothic Bot Boy...")
+    print("[*] Iniciando Anti-Catfish System...")
     start_ping_server()
     bot.run(TOKEN)
