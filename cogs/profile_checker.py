@@ -143,29 +143,26 @@ class ProfileCheckerCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         import asyncio
-        from services.reverse_search import search_image, _bing_search, _google_search
+        from services.reverse_search import search_image
 
-        # Ejecutar búsquedas por separado para debug
-        bing = await asyncio.to_thread(_bing_search, url)
-        google = await asyncio.to_thread(_google_search, url)
-        combined = await asyncio.to_thread(search_image, url)
+        result = await asyncio.to_thread(search_image, url)
 
-        text = f"**🔎 Debug Reverse Search**\n\n"
-        text += f"**Bing:** {len(bing)} resultados\n"
-        for s in bing[:5]:
-            text += f"  🔗 {s['source']}: {s['title'][:40]}\n"
+        text = f"**🔎 SerpAPI Google Lens**\n\n"
+        text += f"Found: {result['found']}\n"
+        if result.get("guess"):
+            text += f"📌 Google dice: **{result['guess']}**\n"
+        if result.get("error"):
+            text += f"Error: {result['error']}\n"
         
-        text += f"\n**Google:** {len(google)} resultados\n"
-        for s in google[:5]:
-            text += f"  🔗 {s['source']}: {s['title'][:40]}\n"
+        text += f"\n**Fuentes ({len(result.get('sources', []))}):**\n"
+        for s in result.get("sources", [])[:10]:
+            text += f"🔗 [{s['title'][:40]}]({s['url']})\n"
 
-        text += f"\n**Combinado:** {len(combined.get('sources',[]))} fuentes ({combined.get('engine','?')})\n"
-        text += f"Found: {combined['found']}\n"
-        if combined.get("error"):
-            text += f"Error: {combined['error']}\n"
+        if not result.get("sources"):
+            text += "Ninguna encontrada\n"
 
         text += f"\n**Manual:**\n"
-        for name, link in combined.get("manual_links", {}).items():
+        for name, link in result.get("manual_links", {}).items():
             text += f"[{name}]({link})\n"
 
         await interaction.followup.send(text[:2000], ephemeral=True)
